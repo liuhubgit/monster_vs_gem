@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>妖怪偷宝石 - Monster vs Gem</title>
+    <style>
+        /* 全局样式，偏卡通扁平化风格 */
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #87CEEB; /* 天空蓝背景 */
+            font-family: 'Comic Sans MS', 'FangSong', cursive, sans-serif; /* 卡通字体 */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            color: #333;
+        }
+        #game-container {
+            position: relative;
+            width: 800px;
+            height: 600px;
+            border: 4px solid #8B4513;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            background-color: #90EE90; /* 草地绿 */
+        }
+        canvas {
+            display: block;
+            border-radius: 6px;
+        }
+        /* UI 面板 */
+        #ui-panel {
+            width: 800px;
+            height: 80px;
+            background-color: #F4A460; /* 沙棕色 */
+            border: 4px solid #8B4513;
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+        .tool-btn {
+            padding: 10px 20px;
+            font-size: 20px;
+            font-weight: bold;
+            border: 3px solid #333;
+            border-radius: 15px;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .tool-btn:active { transform: scale(0.95); }
+        #btn-stick { background-color: #DEB887; color: #333; }
+        #btn-grenade { background-color: #FF6347; color: #FFF; }
+        #btn-start { background-color: #32CD32; color: #FFF; font-size: 24px; padding: 10px 40px;}
+        .info-text { font-size: 24px; font-weight: bold; text-shadow: 1px 1px 0px #FFF; }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+    </div>
+    
+    <div id="ui-panel">
+        <div class="info-text" id="level-info">关卡: 1</div>
+        <button class="tool-btn" id="btn-stick" onclick="selectTool('stick')">🪵 棍子 (无限)</button>
+        <button class="tool-btn" id="btn-grenade" onclick="selectTool('grenade')">💣 手雷 (无限)</button>
+        <div class="info-text" id="gem-info">💎 x 1</div>
+        <button class="tool-btn" id="btn-start" onclick="startLevel()">开始闯关</button>
+    </div>
+
+<script>
+/**
+ * 素材目录映射 (方便后续替换为真实图片资源)
+ * 目前使用Canvas绘制，替换时只需修改 drawXxx 方法中的 img.src
+ */
+const ASSETS = {
+    MONSTER: './assets/images/monster.png', // 妖怪图片
+    GEM: './assets/images/gem.png',         // 宝石图片
+    STICK: './assets/images/stick.png',     // 棍子图片
+    GRENADE: './assets/images/grenade.png', // 手雷图片
+    BG: './assets/images/bg.png'            // 背景图片
+};
+
+// 获取画布
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const WIDTH = canvas.width;
+const HEIGHT = canvas.height;
+
+// 游戏全局状态
+let gameState = 'IDLE'; // IDLE, PLAYING, WIN, LOSE
+let currentLevel = 1;
+let gems = 1;           // 剩余宝石数
+let currentTool = null;  // 当前选中的道具 'stick' 或 'grenade'
+
+// 实体数组
+let monsters = [];
+let sticks = [];       // 棍子障碍区
+let grenades = [];     // 飞行中的手雷
+let explosions = [];   // 爆炸特效
+
+// 宝石位置 (左侧居中)
+const GEM_X = 50;
+const GEM_Y = HEIGHT / 2;
+const GEM_R = 30;
+
+// 关卡配置
+const LEVELS = [
+    { monsterCount: 5, monsterSpeed: 1.5, spawnInterval: 120 }, // 第1关
+    { monsterCount: 10, monsterSpeed: 2.0, spawnInterval: 80 }  // 第2关
+];
+
+let spawnedCount = 0;
+let spawnTimer = 0;
+let levelConfig = null;
+
+// --- 道具选择 ---
+function selectTool(tool) {
+    currentTool = tool;
+    document.getElementById('btn-stick').style.border = tool === 'stick' ? '3px solid #000' : '3px solid #333';
+    document.getElementById('btn-grenade').style.border = tool === 'grenade' ? '3px solid #000' : '3px solid #333';
+}
+
+// --- 开始关卡 ---
+function startLevel() {
+    if (gameState === 'PLAYING') return;
+    
+    gameState = 'PLAYING';
+    gems = 1;
+    monsters = [];
+    sticks = [];
+    grenades = [];
+    explosions = [];
+    spawnedCount = 0;
+    spawnTimer = 0;
+    
+    // 获取当前关卡配置，如果通关则重置
+    let lvlIndex = (currentLevel - 1) % LEVELS.length;
+    levelConfig = LEVELS[lvlIndex];
+    
+    document.getElementById('level-info').innerText = `关卡: ${currentLevel}`;
+    document.getElementById('gem-info').innerText = `💎 x ${gems}`;
+    document.getElementById('btn-start').innerText = `进行中...`;
+}
+
+// --- 鼠标点击放置道具 ---
+canvas.addEventListener('click', (e) => {
+    if (gameState !== 'PLAYING' || !currentTool) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    if (currentTool === 'stick') {
+        sticks.push({ x, y, w: 80, h: 20, angle: Math.random() * Math.PI });
+    } else if (currentTool === 'grenade') {
+        // 手雷从底部中间发射到点击位置
+        grenades.push({ 
+            x: WIDTH / 2, y: HEIGHT, 
+            targetX: x, targetY: y, 
+            speed: 8, 
+            progress: 0 
+        });
+    }
+});
+
+// --- 绘制函数 ---
+
+// 绘制卡通宝石
+function drawGem() {
+    ctx.save();
+    ctx.translate(GEM_X, GEM_Y);
+    // 闪烁效果
+    let scale = 1 + Math.sin(Date.now() / 200) * 0.05;
+    ctx.scale(scale, scale);
+    
+    ctx.beginPath();
+    ctx.moveTo(0, -GEM_R);
+    ctx.lineTo(GEM_R, 0);
+    ctx.lineTo(0, GEM_R);
+    ctx.lineTo(-GEM_R, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#FFD700';
+    ctx.fill();
+    ctx.strokeStyle = '#FFA500';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.restore();
+}
+
+// 绘制卡通妖怪
+function drawMonster(mon) {
+    ctx.save();
+    ctx.translate(mon.x, mon.y);
+    
+    // 身体 (紫色圆团)
+    ctx.beginPath();
+    ctx.arc(0, 0, 20, 0, Math.PI * 2);
+    ctx.fillStyle = '#9370DB';
+    ctx.fill();
+    ctx.strokeStyle = '#4B0082';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // 眼睛
+    ctx.fillStyle = '#FFF';
+    ctx.fillRect(-10, -10, 8, 8);
+    ctx.fillRect(2, -10, 8, 8);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(-7, -8, 4, 4);
+    ctx.fillRect(5, -8, 4, 4);
+    
+    // 生命条
+    ctx.fillStyle = '#333';
+    ctx.fillRect(-15, -30, 30, 5);
+    ctx.fillStyle = mon.hp > 30 ? '#32CD32' : '#FF4500';
+    ctx.fillRect(-15, -30, 30 * (mon.hp / 100), 5);
+    
+    ctx.restore();
+}
+
+// 绘制棍子
+function drawStick(s) {
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.angle);
+    ctx.fillStyle = '#8B4513';
+    ctx.fillRect(-s.w/2, -s.h/2, s.w, s.h);
+    ctx.strokeStyle = '#5C3317';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-s.w/2, -s.h/2, s.w, s.h);
+    ctx.restore();
+}
+
+// 绘制手雷飞行轨迹
+function drawGrenade(g) {
+    ctx.beginPath();
+    ctx.arc(g.x, g.y, 8, 0, Math.PI * 2);
+    ctx.fillStyle = '#333';
+    ctx.fill();
+}
+
+// 绘制爆炸效果
+function drawExplosion(exp) {
+    ctx.beginPath();
+    ctx.arc(exp.x, exp.y, exp.radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 69, 0, ${exp.alpha})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255, 165, 0, ${exp.alpha})`;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+}
+
+// --- 游戏主循环 ---
+function update() {
+    if (gameState !== 'PLAYING') return;
+    
+    // 1. 生成妖怪
+    spawnTimer++;
+    if (spawnTimer >= levelConfig.spawnInterval && spawnedCount < levelConfig.monsterCount) {
+        // 从右侧随机高度进入
+        let spawnY = Math.random() * (HEIGHT - 100) + 50;
+        monsters.push({ x: WIDTH + 20, y: spawnY, hp: 100, speed: levelConfig.monsterSpeed });
+        spawnedCount++;
+        spawnTimer = 0;
+    }
+
+    // 2. 更新妖怪位置
+    for (let i = monsters.length - 1; i >= 0; i--) {
+        let mon = monsters[i];
+        let currentSpeed = mon.speed;
+        
+        // 检测是否在棍子减速区
+        for (let s of sticks) {
+            // 简单的矩形碰撞检测，忽略旋转以简化计算
+            if (mon.x > s.x - s.w && mon.x < s.x + s.w && mon.y > s.y - s.h && mon.y < s.y + s.h) {
+                currentSpeed *= 0.5; // 速度减半
+                break;
+            }
+        }
+        
+        // 向左侧宝石移动
+        let dx = GEM_X - mon.x;
+        let dy = GEM_Y - mon.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist < GEM_R) {
+            // 妖怪到达宝石，偷走宝石
+            gems--;
+            document.getElementById('gem-info').innerText = `💎 x ${gems}`;
+            monsters.splice(i, 1);
+            if (gems <= 0) {
+                gameState = 'LOSE';
+                document.getElementById('btn-start').innerText = `失败！重试`;
+                currentLevel = currentLevel; // 保持当前关卡
+            }
+            continue;
+        }
+        
+        mon.x += (dx / dist) * currentSpeed;
+        mon.y += (dy / dist) * currentSpeed;
+    }
+
+    // 3. 更新手雷
+    for (let i = grenades.length - 1; i >= 0; i--) {
+        let g = grenades[i];
+        g.progress += g.speed / 100;
+        
+        // 抛物线模拟 (简单线性插值 + 弧度偏移模拟高度)
+        g.x = g.x + (g.targetX - g.x) * 0.1;
+        g.y = g.y + (g.targetY - g.y) * 0.1 - Math.sin(g.progress * Math.PI) * 5; // 向上抛的弧线
+        
+        // 到达目标附近
+        if (Math.abs(g.x - g.targetX) < 5 && Math.abs(g.y - g.targetY) < 5) {
+            // 触发爆炸
+            explosions.push({ x: g.targetX, y: g.targetY, radius: 10, maxRadius: 60, alpha: 1.0 });
+            
+            // 对范围内妖怪造成伤害
+            for (let mon of monsters) {
+                let dx = mon.x - g.targetX;
+                let dy = mon.y - g.targetY;
+                let dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 60) { // 爆炸半径60
+                    // 核心伤害逻辑：>10时减10，<=10时减5
+                    let damage = mon.hp > 10 ? 10 : 5;
+                    mon.hp -= damage;
+                }
+            }
+            
+            // 移除死亡妖怪
+            monsters = monsters.filter(m => m.hp > 0);
+            grenades.splice(i, 1);
+        }
+    }
+
+    // 4. 更新爆炸特效
+    for (let i = explosions.length - 1; i >= 0; i--) {
+        let exp = explosions[i];
+        exp.radius += 3;
+        exp.alpha -= 0.05;
+        if (exp.alpha <= 0) {
+            explosions.splice(i, 1);
+        }
+    }
+
+    // 5. 判断胜利条件
+    if (spawnedCount >= levelConfig.monsterCount && monsters.length === 0 && gems > 0) {
+        gameState = 'WIN';
+        currentLevel++;
+        document.getElementById('level-info').innerText = `关卡: ${currentLevel}`;
+        document.getElementById('btn-start').innerText = `进入下一关`;
+    }
+}
+
+// --- 渲染 ---
+function draw() {
+    // 清屏 - 草地背景
+    ctx.fillStyle = '#90EE90';
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    
+    // 画网格线增加空间感
+    ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+    for(let i=0; i<WIDTH; i+=40) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,HEIGHT); ctx.stroke(); }
+    for(let i=0; i<HEIGHT; i+=40) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(WIDTH,i); ctx.stroke(); }
+
+    // 绘制道具和实体
+    sticks.forEach(drawStick);
+    drawGem();
+    monsters.forEach(drawMonster);
+    grenades.forEach(drawGrenade);
+    explosions.forEach(drawExplosion);
+
+    // 绘制UI提示
+    if (gameState === 'IDLE') {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0,0,WIDTH,HEIGHT);
+        ctx.fillStyle = '#FFF';
+        ctx.font = '40px cursive';
+        ctx.textAlign = 'center';
+        ctx.fillText(`准备迎接第 ${currentLevel} 关的妖怪！`, WIDTH/2, HEIGHT/2);
+        ctx.font = '20px cursive';
+        ctx.fillText(`点击下方【开始闯关】按钮`, WIDTH/2, HEIGHT/2 + 50);
+    } else if (gameState === 'WIN') {
+        ctx.fillStyle = 'rgba(0,255,0,0.3)';
+        ctx.fillRect(0,0,WIDTH,HEIGHT);
+        ctx.fillStyle = '#000';
+        ctx.font = '50px cursive';
+        ctx.textAlign = 'center';
+        ctx.fillText(`🎉 关卡通过！🎉`, WIDTH/2, HEIGHT/2);
+    } else if (gameState === 'LOSE') {
+        ctx.fillStyle = 'rgba(255,0,0,0.3)';
+        ctx.fillRect(0,0,WIDTH,HEIGHT);
+        ctx.fillStyle = '#000';
+        ctx.font = '50px cursive';
+        ctx.textAlign = 'center';
+        ctx.fillText(`💀 宝石被偷走了！💀`, WIDTH/2, HEIGHT/2);
+    }
+}
+
+// --- 主循环心跳 ---
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+// 启动游戏
+gameLoop();
+
+</script>
+</body>
+</html>
