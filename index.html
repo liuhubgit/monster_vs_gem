@@ -51,6 +51,7 @@
             border-radius: 15px;
             cursor: pointer;
             transition: transform 0.1s;
+            user-select: none;
         }
         .tool-btn:active { transform: scale(0.95); }
         #btn-stick { background-color: #DEB887; color: #333; }
@@ -111,8 +112,8 @@ const GEM_R = 30;
 
 // 关卡配置
 const LEVELS = [
-    { monsterCount: 5, monsterSpeed: 1.5, spawnInterval: 120 }, // 第1关
-    { monsterCount: 10, monsterSpeed: 2.0, spawnInterval: 80 }  // 第2关
+    { monsterCount: 2, monsterSpeed: 0.5, spawnInterval: 150 }, // 第1关：2个怪，慢速
+    { monsterCount: 3, monsterSpeed: 0.8, spawnInterval: 120 }  // 第2关：3个怪，稍快
 ];
 
 let spawnedCount = 0;
@@ -122,6 +123,7 @@ let levelConfig = null;
 // --- 道具选择 ---
 function selectTool(tool) {
     currentTool = tool;
+    // 视觉反馈：选中时边框加粗变黑
     document.getElementById('btn-stick').style.border = tool === 'stick' ? '3px solid #000' : '3px solid #333';
     document.getElementById('btn-grenade').style.border = tool === 'grenade' ? '3px solid #000' : '3px solid #333';
 }
@@ -139,7 +141,7 @@ function startLevel() {
     spawnedCount = 0;
     spawnTimer = 0;
     
-    // 获取当前关卡配置，如果通关则重置
+    // 获取当前关卡配置
     let lvlIndex = (currentLevel - 1) % LEVELS.length;
     levelConfig = LEVELS[lvlIndex];
     
@@ -157,11 +159,13 @@ canvas.addEventListener('click', (e) => {
     const y = e.clientY - rect.top;
     
     if (currentTool === 'stick') {
-        sticks.push({ x, y, w: 80, h: 20, angle: Math.random() * Math.PI });
+        // 优化：棍子永远竖直放置，宽度窄，高度长，形成横向阻挡线
+        sticks.push({ x, y, w: 20, h: 80, angle: 0 });
     } else if (currentTool === 'grenade') {
-        // 手雷从底部中间发射到点击位置
+        // 投掷手雷，从底部中间发射到点击位置
         grenades.push({ 
             x: WIDTH / 2, y: HEIGHT, 
+            startX: WIDTH / 2, startY: HEIGHT,
             targetX: x, targetY: y, 
             speed: 8, 
             progress: 0 
@@ -215,11 +219,23 @@ function drawMonster(mon) {
     ctx.fillRect(-7, -8, 4, 4);
     ctx.fillRect(5, -8, 4, 4);
     
-    // 生命条
+    // 生命条背景
     ctx.fillStyle = '#333';
-    ctx.fillRect(-15, -30, 30, 5);
+    ctx.fillRect(-15, -35, 30, 6);
+    // 生命条前景
     ctx.fillStyle = mon.hp > 30 ? '#32CD32' : '#FF4500';
-    ctx.fillRect(-15, -30, 30 * (mon.hp / 100), 5);
+    ctx.fillRect(-15, -35, 30 * (mon.hp / 100), 6);
+    // 生命条边框
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(-15, -35, 30, 6);
+
+    // 优化：在血条上方显示生命值数字
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 10px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(mon.hp, 0, -37);
     
     ctx.restore();
 }
@@ -228,7 +244,7 @@ function drawMonster(mon) {
 function drawStick(s) {
     ctx.save();
     ctx.translate(s.x, s.y);
-    ctx.rotate(s.angle);
+    ctx.rotate(s.angle); // 现在angle始终为0，竖直放置
     ctx.fillStyle = '#8B4513';
     ctx.fillRect(-s.w/2, -s.h/2, s.w, s.h);
     ctx.strokeStyle = '#5C3317';
@@ -243,6 +259,9 @@ function drawGrenade(g) {
     ctx.arc(g.x, g.y, 8, 0, Math.PI * 2);
     ctx.fillStyle = '#333';
     ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
 }
 
 // 绘制爆炸效果
@@ -297,7 +316,6 @@ function update() {
             if (gems <= 0) {
                 gameState = 'LOSE';
                 document.getElementById('btn-start').innerText = `失败！重试`;
-                currentLevel = currentLevel; // 保持当前关卡
             }
             continue;
         }
@@ -309,23 +327,24 @@ function update() {
     // 3. 更新手雷
     for (let i = grenades.length - 1; i >= 0; i--) {
         let g = grenades[i];
-        g.progress += g.speed / 100;
+        g.progress += 0.02; // 控制手雷飞行时间
         
-        // 抛物线模拟 (简单线性插值 + 弧度偏移模拟高度)
-        g.x = g.x + (g.targetX - g.x) * 0.1;
-        g.y = g.y + (g.targetY - g.y) * 0.1 - Math.sin(g.progress * Math.PI) * 5; // 向上抛的弧线
+        // 贝塞尔曲线模拟抛物线
+        let t = g.progress;
+        g.x = (1-t)*(1-t)*g.startX + 2*(1-t)*t*((g.startX+g.targetX)/2) + t*t*g.targetX;
+        g.y = (1-t)*(1-t)*g.startY + 2*(1-t)*t*(Math.min(g.startY, g.targetY) - 150) + t*t*g.targetY;
         
-        // 到达目标附近
-        if (Math.abs(g.x - g.targetX) < 5 && Math.abs(g.y - g.targetY) < 5) {
+        // 到达目标
+        if (t >= 1.0) {
             // 触发爆炸
-            explosions.push({ x: g.targetX, y: g.targetY, radius: 10, maxRadius: 60, alpha: 1.0 });
+            explosions.push({ x: g.targetX, y: g.targetY, radius: 10, maxRadius: 70, alpha: 1.0 });
             
             // 对范围内妖怪造成伤害
             for (let mon of monsters) {
                 let dx = mon.x - g.targetX;
                 let dy = mon.y - g.targetY;
                 let dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < 60) { // 爆炸半径60
+                if (dist < 70) { // 爆炸半径70
                     // 核心伤害逻辑：>10时减10，<=10时减5
                     let damage = mon.hp > 10 ? 10 : 5;
                     mon.hp -= damage;
@@ -342,7 +361,7 @@ function update() {
     for (let i = explosions.length - 1; i >= 0; i--) {
         let exp = explosions[i];
         exp.radius += 3;
-        exp.alpha -= 0.05;
+        exp.alpha -= 0.04;
         if (exp.alpha <= 0) {
             explosions.splice(i, 1);
         }
